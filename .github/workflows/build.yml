@@ -5,75 +5,66 @@ on:
   push:
     branches: [main]
 
+env:
+  VERSION: "1.0.0"
+
 jobs:
   build-ios:
+    name: 编译 iOS 安装包
     runs-on: macos-latest
+    timeout-minutes: 30
     steps:
-      - name: Checkout
+      - name: 获取项目源码
         uses: actions/checkout@v4
 
-      - name: Setup Xcode
-        uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: latest-stable
+      - name: 检查苹果编译环境
+        run: |
+          xcode-select -p
+          xcodebuild -version
 
-      - name: Setup Ruby
-        uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: "3.2"
-          bundler-cache: true
+      - name: 安装项目生成工具
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            HOMEBREW_NO_AUTO_UPDATE=1 brew install xcodegen
+          fi
+          xcodegen --version
 
-      - name: Install XcodeGen
-        run: brew install xcodegen
-
-      - name: Generate Xcode project
+      - name: 生成 Xcode 工程
         run: xcodegen generate
 
-      - name: Build IPA
+      - name: 编译 iPhone 应用
         run: |
-          xcodebuild -project Listen1WebView.xcodeproj \
+          set -euo pipefail
+          xcodebuild \
+            -project Listen1WebView.xcodeproj \
             -scheme Listen1WebView \
             -configuration Release \
             -sdk iphoneos \
-            -destination generic/platform=iOS \
-            -archivePath $RUNNER_TEMP/Listen1WebView.xcarchive \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
             CODE_SIGNING_ALLOWED=NO \
-            archive
+            build
 
-      - name: Export IPA (ad-hoc)
+      - name: 打包 IPA 安装包
         run: |
-          cat > $RUNNER_TEMP/ExportOptions.plist << 'EOF'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>method</key>
-              <string>development</string>
-              <key>signingStyle</key>
-              <string>automatic</string>
-              <key>stripSwiftSymbols</key>
-              <true/>
-              <key>teamID</key>
-              <string></string>
-              <key>uploadSymbols</key>
-              <false/>
-          </dict>
-          </plist>
-          EOF
-          
-          xcodebuild -exportArchive \
-            -archivePath $RUNNER_TEMP/Listen1WebView.xcarchive \
-            -exportOptionsPlist $RUNNER_TEMP/ExportOptions.plist \
-            -exportPath $RUNNER_TEMP/build \
-            CODE_SIGNING_ALLOWED=NO
+          set -euo pipefail
+          APP="build/DerivedData/Build/Products/Release-iphoneos/Listen1WebView.app"
+          test -d "$APP"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist" | grep -Fx 'com.listen1.webview.Listen1WebView'
+          mkdir -p build/ipa/Payload
+          cp -R "$APP" build/ipa/Payload/Listen1WebView.app
+          /usr/bin/codesign --force --deep --sign - build/ipa/Payload/Listen1WebView.app
+          cd build/ipa
+          /usr/bin/zip -qry "../Listen1WebView-v$VERSION.ipa" Payload
+          cd ../..
+          test -s "build/Listen1WebView-v$VERSION.ipa"
+          echo "IPA 安装包已生成："
+          ls -lh "build/Listen1WebView-v$VERSION.ipa"
+          /usr/bin/unzip -l "build/Listen1WebView-v$VERSION.ipa" | head -20
 
-      - name: Rename IPA
-        run: |
-          cp $RUNNER_TEMP/build/Listen1WebView.ipa $RUNNER_TEMP/Listen1WebView_1.0.0.ipa
-
-      - name: Upload IPA
+      - name: 上传 IPA
         uses: actions/upload-artifact@v4
         with:
           name: Listen1WebView
-          path: ${{ runner.temp }}/Listen1WebView_1.0.0.ipa
+          path: build/Listen1WebView-v${{ env.VERSION }}.ipa
           retention-days: 7
